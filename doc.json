@@ -1,0 +1,13 @@
+{
+  "name": "fireworks",
+  "description": "A typed safe Omegga plugin.",
+  "author": "voximity",
+  "config": {
+    "update_rate": {
+      "description": "How often to update the simulation, in milliseconds.",
+      "type": "number",
+      "default": 500
+    }
+  },
+  "commands": []
+}
