@@ -3,3 +3,5 @@ node_modules/
 omegga.d.ts
 disabled.omegga
 package-lock.json
+schema.json
+*.config.json

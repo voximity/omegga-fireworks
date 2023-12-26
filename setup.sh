@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
-# This script will be run when the plugin is installed...
-[[ -f "package.json" ]] && npm i
+npm i
+npx --yes ts-json-schema-generator -p format.ts -t ParticleFile \
+    --markdown-description --additional-properties \
+    -o schema.json
 
 exit 0

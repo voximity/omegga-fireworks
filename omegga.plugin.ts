@@ -1,30 +1,43 @@
 import OmeggaPlugin, { OL, PS, PC, WriteSaveObject } from 'omegga';
-import Particle, { ParticleDef, ParticleSystem } from './particle';
+import Particle, { ParticleSystem } from './particle';
+import { ParticleDef, ParticleFile } from './format';
+import fs from 'fs';
 
 const { random: uuid } = OMEGGA_UTIL.uuid;
 
 export type Config = { update_rate: number };
 type Storage = { uuids: string[] };
 
-const BASIC_FIREWORK: ParticleDef = {
-  size: 5,
-  color: [255, 255, 255],
-  velocity: [0, 0, [400, 600]],
-  lifespan: [1.6, 2.4],
-  numChildren: [75, 100],
-  children: [
-    {
-      color: [[0, 360], 255, 255],
-      hsv: true,
-      size: 3,
-      velocity: [80, 125],
-      randomVelocity: true,
-      lifespan: [2.5, 3.5],
-      gravity: 0.5,
-      preSimulate: 0.5,
-    },
-  ],
-};
+function loadParticleFile(filename: string): ParticleFile {
+  const data = JSON.parse(fs.readFileSync(filename).toString()) as ParticleFile;
+
+  function resolveRefs(def: ParticleDef) {
+    if (!def.children) return;
+
+    for (const child of def.children) {
+      if (Array.isArray(child.def)) {
+        child.def = child.def.map((d) => {
+          const result = typeof d === 'string' ? data.defs[d] : d;
+          if (!result) throw 'invalid_def_ref';
+          resolveRefs(result);
+          return result;
+        });
+      } else {
+        if (typeof child.def === 'string') {
+          child.def = data.defs[child.def];
+          if (!child.def) throw 'invalid_def_ref';
+        }
+        resolveRefs(child.def);
+      }
+    }
+  }
+
+  for (const def of Object.values(data.defs)) {
+    resolveRefs(def);
+  }
+
+  return data;
+}
 
 export default class Plugin implements OmeggaPlugin<Config, Storage> {
   omegga: OL;
@@ -65,7 +78,7 @@ export default class Plugin implements OmeggaPlugin<Config, Storage> {
     const save: WriteSaveObject = {
       brick_assets: ['PB_DefaultMicroBrick'],
       materials: ['BMC_Glow'],
-      brick_owners: [{ name: 'Firework particle', id }],
+      brick_owners: [{ name: 'Firework', id }],
       bricks: [],
     };
 
@@ -83,6 +96,8 @@ export default class Plugin implements OmeggaPlugin<Config, Storage> {
   };
 
   async init() {
+    const data = loadParticleFile('plugins/fireworks/ny24.json');
+
     let time = Date.now();
 
     this.allUuids = (await this.store.get('uuids')) ?? [];
@@ -119,13 +134,21 @@ export default class Plugin implements OmeggaPlugin<Config, Storage> {
       }
     }, this.config.update_rate);
 
-    this.omegga.on('cmd:firework', async (speaker: string) => {
+    this.omegga.on('cmd:firework', async (speaker: string, name: string) => {
       try {
         const player = this.omegga.getPlayer(speaker);
         const position = await player.getPosition();
 
+        if (!(name in data.defs)) {
+          this.omegga.whisper(
+            speaker,
+            "Couldn't find a particle with that name."
+          );
+          return;
+        }
+
         this.system.addParticle(
-          Particle.fromDef(this.system, BASIC_FIREWORK, ...position)
+          Particle.fromDef(this.system, data.defs[name], ...position)
         );
       } catch (e) {
         console.error('Error creating firework:', e);
