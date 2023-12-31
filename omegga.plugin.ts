@@ -1,4 +1,11 @@
-import OmeggaPlugin, { OL, PS, PC, WriteSaveObject, Vector } from 'omegga';
+import OmeggaPlugin, {
+  OL,
+  PS,
+  PC,
+  WriteSaveObject,
+  Vector,
+  OmeggaPlayer,
+} from 'omegga';
 import Particle, { ParticleSystem } from './particle';
 import { CategoryDef, ParticleDef, ParticleFile, computeRange } from './format';
 import fs from 'fs';
@@ -67,6 +74,15 @@ export default class Plugin implements OmeggaPlugin<Config, Storage> {
 
     this.system = new ParticleSystem(config);
   }
+
+  isAuthorized = (player: string | OmeggaPlayer): boolean => {
+    const p =
+      typeof player === 'string' ? this.omegga.getPlayer(player) : player;
+
+    return (
+      p.isHost() || p.getRoles().some((r) => this.config.authorized.includes(r))
+    );
+  };
 
   takeUuid = (): string => {
     if (this.freeUuids.length) {
@@ -148,6 +164,10 @@ export default class Plugin implements OmeggaPlugin<Config, Storage> {
     }, this.config.update_rate);
 
     const onCommand = async (speaker: string, ...args: string[]) => {
+      if (!this.isAuthorized(speaker)) {
+        return;
+      }
+
       const w = (...message: string[]) =>
         this.omegga.whisper(speaker, message.join(''));
 
