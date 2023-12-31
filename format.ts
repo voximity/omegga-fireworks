@@ -92,6 +92,26 @@ export function computeVecRange(range: VecRange): [number, number, number] {
   return range.map((c) => computeRange(c)) as [number, number, number];
 }
 
+export type CategoryDef = {
+  /** how often this category of emitters will fire, in seconds */
+  interval: Range;
+
+  /** the types of particles that can start at this category */
+  defs: string[];
+};
+
+export type ShowDef = {
+  /** The emitter categories for the show. All emitters have `all` applied, and emitters that do not fit into any other category have `other` applied. */
+  categories: {
+    all?: Partial<CategoryDef>;
+    other: Partial<CategoryDef>;
+  } & Record<string, CategoryDef>;
+
+  /** How long the show will last. */
+  length: number;
+};
+
 export type ParticleFile = {
   defs: Record<string, ParticleDef>;
+  shows: Record<string, ShowDef>;
 };

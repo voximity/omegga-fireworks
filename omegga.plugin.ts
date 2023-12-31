@@ -1,12 +1,17 @@
-import OmeggaPlugin, { OL, PS, PC, WriteSaveObject } from 'omegga';
+import OmeggaPlugin, { OL, PS, PC, WriteSaveObject, Vector } from 'omegga';
 import Particle, { ParticleSystem } from './particle';
-import { ParticleDef, ParticleFile } from './format';
+import { CategoryDef, ParticleDef, ParticleFile, computeRange } from './format';
 import fs from 'fs';
 
 const { random: uuid } = OMEGGA_UTIL.uuid;
+const { code, cyan, yellow } = OMEGGA_UTIL.chat;
 
-export type Config = { update_rate: number };
-type Storage = { uuids: string[] };
+export type Config = { update_rate: number; authorized: string[] };
+
+type Storage = {
+  uuids: string[];
+  emitters: { position: Vector; name: string; categories: string[] }[];
+};
 
 function loadParticleFile(filename: string): ParticleFile {
   const data = JSON.parse(fs.readFileSync(filename).toString()) as ParticleFile;
@@ -49,6 +54,11 @@ export default class Plugin implements OmeggaPlugin<Config, Storage> {
   lastUuid?: string;
 
   system: ParticleSystem;
+  emitters: Storage['emitters'];
+  showActive: boolean = false;
+  abortShow?: () => void;
+
+  data: ParticleFile;
 
   constructor(omegga: OL, config: PC<Config>, store: PS<Storage>) {
     this.omegga = omegga;
@@ -95,15 +105,18 @@ export default class Plugin implements OmeggaPlugin<Config, Storage> {
     return [save, id];
   };
 
+  saveEmitters = async () => {
+    await this.store.set('emitters', this.emitters);
+  };
+
   async init() {
-    const data = loadParticleFile('plugins/fireworks/ny24.json');
+    this.data = loadParticleFile('plugins/fireworks/ny24.config.json');
+    this.emitters = (await this.store.get('emitters')) ?? [];
 
     let time = Date.now();
 
     this.allUuids = (await this.store.get('uuids')) ?? [];
     this.freeUuids = [...this.allUuids];
-
-    console.log('cached', this.allUuids.length, 'uuids');
 
     for (const uuid of this.allUuids) {
       this.omegga.clearBricks(uuid, true);
@@ -134,28 +147,188 @@ export default class Plugin implements OmeggaPlugin<Config, Storage> {
       }
     }, this.config.update_rate);
 
-    this.omegga.on('cmd:firework', async (speaker: string, name: string) => {
-      try {
-        const player = this.omegga.getPlayer(speaker);
-        const position = await player.getPosition();
+    const onCommand = async (speaker: string, ...args: string[]) => {
+      const w = (...message: string[]) =>
+        this.omegga.whisper(speaker, message.join(''));
 
-        if (!(name in data.defs)) {
-          this.omegga.whisper(
-            speaker,
-            "Couldn't find a particle with that name."
+      if (args[0] === 'emitters') {
+        if (args[1] === 'new') {
+          if (args.length <= 2) {
+            w(
+              'You must specify a name for the emitter (with no spaces) followed by the categories it belongs to.'
+            );
+            return;
+          }
+
+          const [name, ...categories] = args.slice(2);
+          if (
+            this.emitters.find(
+              (e) => e.name.toLowerCase() === name.trim().toLowerCase()
+            )
+          ) {
+            w('An emitter already exists with that name.');
+            return;
+          }
+
+          const position = await this.omegga.getPlayer(speaker).getPosition();
+
+          this.emitters.push({ name: name.trim(), position, categories });
+          await this.saveEmitters();
+          w('Created the emitter ', code(name.trim()), '.');
+        } else if (args[1] === 'delete') {
+          if (args.length <= 2) {
+            w('You must specify a name for the emitter to delete.');
+            return;
+          }
+
+          const name = args[2].trim();
+
+          const filtered = this.emitters.filter(
+            (e) => e.name.toLowerCase() === name.toLowerCase()
           );
-          return;
+          if (!filtered.length) {
+            w('No emitters found with that name.');
+            return;
+          }
+
+          this.emitters = filtered;
+          await this.saveEmitters();
+          w('Removed that emitter.');
+        } else if (args[1] === 'list') {
+          w('List of emitters:');
+          for (const e of this.emitters) {
+            w(
+              '- ',
+              cyan(e.name),
+              ' [',
+              e.categories.map(yellow).join(', '),
+              '] at ',
+              code(e.position.join(', '))
+            );
+          }
         }
+      } else if (args[0] === 'shows') {
+        if (args[1] === 'start') {
+          if (!args[2]) {
+            w(
+              'Please specify a show to start. Use ',
+              code('/fireworks shows list'),
+              ' to see your options.'
+            );
+            return;
+          }
 
-        this.system.addParticle(
-          Particle.fromDef(this.system, data.defs[name], ...position)
-        );
-      } catch (e) {
-        console.error('Error creating firework:', e);
+          if (!this.emitters?.length) {
+            w('There are no emitters. The show cannot start.');
+            return;
+          }
+
+          const show = this.data.shows[args[2].trim()];
+          if (!show) {
+            w('Unable to find a show with that name.');
+            return;
+          }
+
+          const timeouts: Record<string, NodeJS.Timeout> = {};
+          const baseCategory = show.categories.all ?? {};
+          const start = Date.now();
+
+          for (const e of this.emitters) {
+            let cat: Partial<CategoryDef> = baseCategory;
+            let isSomeCategory = false;
+
+            for (const c of e.categories) {
+              if (c in show.categories) {
+                isSomeCategory = true;
+                cat = { ...cat, ...show.categories[c] };
+              }
+            }
+
+            if (!isSomeCategory) {
+              cat = { ...cat, ...show.categories.other };
+            }
+
+            const createTimeout = () =>
+              setTimeout(() => {
+                if (!cat.defs) return;
+
+                const def =
+                  cat.defs[Math.floor(Math.random() * cat.defs.length)];
+                this.system.addParticle(
+                  Particle.fromDef(
+                    this.system,
+                    this.data.defs[def],
+                    ...e.position
+                  )
+                );
+
+                if (Date.now() < start + show.length * 1_000) {
+                  timeouts[e.name] = createTimeout();
+                }
+              }, computeRange(cat.interval) * 1_000);
+
+            timeouts[e.name] = createTimeout();
+          }
+
+          const stopTimeout = setTimeout(() => {
+            this.showActive = false;
+            delete this.abortShow;
+            console.log('The show has ended.');
+          }, show.length * 1_000);
+
+          this.showActive = true;
+          this.abortShow = () => {
+            this.showActive = false;
+            delete this.abortShow;
+            clearTimeout(stopTimeout);
+            Object.values(timeouts).forEach(clearTimeout);
+            console.log('The show has been aborted.');
+          };
+        } else if (args[1] === 'stop') {
+          if (!this.showActive) {
+            w('No show is active.');
+            return;
+          }
+
+          this.abortShow();
+          w('Show stopped. What a show-stopper.');
+        } else if (args[1] === 'list') {
+          w('List of shows:');
+          for (const [name] of Object.entries(this.data.shows)) {
+            w('- ', cyan(name));
+          }
+        }
+      } else {
+        // ...
       }
-    });
+    };
 
-    return { registeredCommands: ['firework'] };
+    this.omegga.on(
+      'cmd:fireworks',
+      async (speaker: string, ...args: string[]) => {
+        try {
+          await onCommand(speaker, ...args);
+          // const player = this.omegga.getPlayer(speaker);
+          // const position = await player.getPosition();
+
+          // if (!(name in data.defs)) {
+          //   this.omegga.whisper(
+          //     speaker,
+          //     "Couldn't find a particle with that name."
+          //   );
+          //   return;
+          // }
+
+          // this.system.addParticle(
+          //   Particle.fromDef(this.system, data.defs[name], ...position)
+          // );
+        } catch (e) {
+          console.error('Firework command error:', e);
+        }
+      }
+    );
+
+    return { registeredCommands: ['fireworks'] };
   }
 
   async stop() {}
